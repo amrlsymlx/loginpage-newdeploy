@@ -48,3 +48,5 @@ temp/
 *.pid
 *.seed
 *.pid.lock
+
+expo-env.d.ts
