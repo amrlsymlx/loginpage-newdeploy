@@ -2,19 +2,23 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
 import { Stack, usePathname } from "expo-router";
 import { StyleSheet, View } from "react-native";
+import { Analytics } from "../lib/analytics";
 import { ThemeProvider, ThemeToggle, useTheme } from "../lib/theme";
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts(MaterialCommunityIcons.font);
 
-  if (!fontsLoaded) {
-    return null;
-  }
-
+  // Analytics sits outside the font gate so a first visit is still counted
+  // while the icon font is in flight — it renders nothing either way.
   return (
-    <ThemeProvider>
-      <RootNavigator />
-    </ThemeProvider>
+    <>
+      <Analytics />
+      {fontsLoaded ? (
+        <ThemeProvider>
+          <RootNavigator />
+        </ThemeProvider>
+      ) : null}
+    </>
   );
 }
 
