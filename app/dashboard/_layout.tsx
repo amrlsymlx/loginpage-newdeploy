@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Tabs, useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Image,
@@ -34,6 +34,8 @@ const DRAWER_RADIUS = 30;
 // padding ever changes.
 const DRAWER_HEADER_TOP_PADDING = 10;
 const CONTENT_GAP_BELOW_AVATAR = 20;
+/** Horizontal travel before a drag counts as a swipe rather than a tap. */
+const SWIPE_ACTIVATION_DISTANCE = 24;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
@@ -117,7 +119,12 @@ export default function DashboardTabsLayout() {
       onMoveShouldSetPanResponder: (_, gestureState) => {
         const horizontal = Math.abs(gestureState.dx);
         const vertical = Math.abs(gestureState.dy);
-        return horizontal > 6 && horizontal > vertical * 1.1;
+        // These handlers sit on drawerSurface, which wraps every drawer button.
+        // Claiming the gesture cancels the Pressable underneath, so the
+        // threshold has to be higher than a finger's drift during an ordinary
+        // tap — at the old 6px a normal tap on Settings was swallowed and
+        // onPress never fired.
+        return horizontal > SWIPE_ACTIVATION_DISTANCE && horizontal > vertical * 1.1;
       },
       onPanResponderGrant: () => {
         gestureStartProgress.current = currentProgress.current;
@@ -143,30 +150,77 @@ export default function DashboardTabsLayout() {
   }, [openTranslateX, progress]);
 
   const mountedRef = useRef(true);
+  const hasCheckedSession = useRef(false);
 
-  const refreshProfile = useCallback(async () => {
-    const nextProfile = await loadProfile();
+  const refreshProfile = useCallback(
+    async (redirectWhenSignedOut = false) => {
+      const nextProfile = await loadProfile();
 
-    if (!nextProfile) {
-      router.replace("/");
-      return;
-    }
+      if (nextProfile) {
+        if (mountedRef.current) {
+          setProfile(nextProfile);
+        }
+        return;
+      }
 
-    if (mountedRef.current) {
-      setProfile(nextProfile);
-    }
-  }, [router]);
+      // Only the very first check is allowed to bounce to sign-in. Later
+      // refreshes keep whatever profile we already have, because a failure
+      // there is far more likely to be a transient read than a real sign-out —
+      // and redirecting on it is what dropped users at the login screen every
+      // time they used the drawer's Home or Settings button. A genuine sign-out
+      // still redirects, via the onAuthStateChange subscription below.
+      if (redirectWhenSignedOut) {
+        console.warn("[auth] Initial session check found no profile.");
+        router.replace("/");
+      }
+    },
+    [router],
+  );
 
   useFocusEffect(
     useCallback(() => {
       mountedRef.current = true;
-      void refreshProfile();
+      void refreshProfile(!hasCheckedSession.current);
+      hasCheckedSession.current = true;
 
       return () => {
         mountedRef.current = false;
       };
     }, [refreshProfile]),
   );
+
+  // The authoritative sign-out signal. Covers token expiry and sign-outs
+  // triggered from anywhere, without every screen focus having to re-prove the
+  // session over the network.
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
+        console.warn("[auth] Supabase reported SIGNED_OUT; leaving dashboard.");
+        router.replace("/");
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [router]);
+
+  /**
+   * `navigate`, not `replace` or `push`. `replace` swaps the whole `dashboard`
+   * entry on the root stack and `push` adds a second one — both remount this
+   * layout, resetting `profile` and re-running the session guard. `navigate`
+   * switches to the sibling route inside the tab navigator that is already
+   * mounted. No "are we already there?" check: settings is reachable from every
+   * tab, and a stale pathname comparison could only ever silently do nothing.
+   */
+  const openSettings = () => {
+    closeDrawer();
+    router.navigate("/dashboard/settings");
+  };
 
   const drawerContextValue = useMemo(
     () => ({
@@ -192,10 +246,13 @@ export default function DashboardTabsLayout() {
           pointerEvents={isDrawerOpen ? "auto" : "none"}
           style={[styles.drawerLayer, { backgroundColor: theme.drawerBackground }]}
         >
-          {/* Transparent swipe strip; box-only on native so buttons stay tappable */}
+          {/* Transparent swipe strip. box-none so it never intercepts a tap
+              meant for a drawer button — drawerSurface carries the same pan
+              handlers, so swipes over the drawer itself still work. */}
           {panResponder ? (
             <Animated.View
               {...panResponder.panHandlers}
+              pointerEvents="box-none"
               style={styles.swipeZone}
             />
           ) : null}
@@ -271,34 +328,7 @@ export default function DashboardTabsLayout() {
 
             <View style={styles.drawerMenu}>
               <Pressable
-                onPress={() => {
-                  closeDrawer();
-                  router.replace("/dashboard");
-                }}
-                style={({ pressed }) => [
-                  styles.drawerItem,
-                  {
-                    backgroundColor: theme.background,
-                    borderColor: theme.border,
-                  },
-                  pressed && styles.drawerItemPressed,
-                ]}
-              >
-                <MaterialCommunityIcons
-                  name="home-outline"
-                  size={20}
-                  color={theme.accent}
-                />
-                <Text style={[styles.drawerItemLabel, { color: theme.text }]}>
-                  Home
-                </Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => {
-                  closeDrawer();
-                  router.replace("/dashboard/settings");
-                }}
+                onPress={openSettings}
                 style={({ pressed }) => [
                   styles.drawerItem,
                   {
@@ -355,6 +385,7 @@ export default function DashboardTabsLayout() {
             initialRouteName="index"
             screenOptions={{
               headerShown: false,
+              sceneStyle: { backgroundColor: theme.background },
               tabBarActiveTintColor: theme.accent,
               tabBarInactiveTintColor: theme.secondaryText,
               tabBarStyle: {
@@ -419,7 +450,7 @@ export default function DashboardTabsLayout() {
               style={[styles.outsideOverlay, { left: openTranslateX }]}
             >
               <Pressable
-                style={StyleSheet.absoluteFillObject}
+                style={StyleSheet.absoluteFill}
                 onPress={closeDrawer}
               />
             </Animated.View>
@@ -442,7 +473,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   drawerLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     justifyContent: "flex-start",
     zIndex: 1,
   },
@@ -450,6 +481,10 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingTop: 14,
     paddingHorizontal: 14,
+    // Must outrank swipeZone. iOS orders overlapping siblings by zIndex, and
+    // with this left unset the transparent full-bleed swipe catcher could land
+    // on top and silently eat every tap on the buttons below.
+    zIndex: 1,
   },
   swipeZone: {
     position: "absolute",
@@ -508,10 +543,12 @@ const styles = StyleSheet.create({
     gap: 8,
     width: "100%",
   },
+  // `gap` is deliberately not used on these two rows: it mislays out on native
+  // here and collapsed the labels away entirely. An explicit margin on the
+  // label is equivalent and reliable.
   signOutItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
     paddingVertical: 10,
     paddingHorizontal: 10,
     width: "100%",
@@ -521,11 +558,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#ef4444",
+    marginLeft: 10,
+    // 0, not 1: if something upstream over-constrains this row, the label
+    // should overflow where it can be seen rather than collapse to nothing.
+    flexShrink: 0,
   },
   drawerItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
     borderRadius: 12,
     borderWidth: 1,
     paddingVertical: 10,
@@ -537,6 +577,10 @@ const styles = StyleSheet.create({
   drawerItemLabel: {
     fontSize: 15,
     fontWeight: "700",
+    marginLeft: 10,
+    // 0, not 1: if something upstream over-constrains this row, the label
+    // should overflow where it can be seen rather than collapse to nothing.
+    flexShrink: 0,
   },
   pageShell: {
     flex: 1,

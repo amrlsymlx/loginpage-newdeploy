@@ -1,6 +1,4 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { decode as decodeBase64 } from "base64-arraybuffer";
-import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
@@ -25,6 +23,8 @@ import {
   getAvatarSource,
   normalizeAvatarLibraryKey,
 } from "../../lib/avatarLibrary";
+import { prepareAvatarUpload } from "../../lib/avatarUpload";
+import { notify } from "../../lib/notify";
 import { loadProfile } from "../../lib/profile";
 import { getAuthSession, updateAuthSession } from "../../lib/storage";
 import { SUPABASE_CONFIGURED, supabase } from "../../lib/supabase";
@@ -32,15 +32,30 @@ import { useTheme } from "../../lib/theme";
 
 type PendingAvatarAction = "gallery" | "camera" | null;
 
+/**
+ * On web every one of these options is ignored — the browser picker has no
+ * cropper and no compressor. prepareAvatarUpload() squares and downscales the
+ * result instead, so a 12MP camera shot is not uploaded verbatim.
+ */
+const AVATAR_PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
+  mediaTypes: ["images"],
+  allowsEditing: true,
+  aspect: [1, 1],
+  quality: 0.8,
+};
+
 const wait = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
 
+/** Native only — the web picker needs no permissions and has no settings app. */
 const promptOpenSettings = (permissionName: "Camera" | "Photo Library") => {
   Alert.alert(
     `${permissionName} permission is off`,
-    `Enable ${permissionName.toLowerCase()} access in iOS Settings to continue.`,
+    `Enable ${permissionName.toLowerCase()} access in ${
+      Platform.OS === "ios" ? "iOS Settings" : "app settings"
+    } to continue.`,
     [
       { text: "Cancel", style: "cancel" },
       {
@@ -102,14 +117,19 @@ export default function EditProfileScreen() {
     [normalizedAvatarLibraryKey, email],
   );
 
-  const saveAvatarUri = async (nextUri: string) => {
+  const saveAvatarAsset = async (asset: ImagePicker.ImagePickerAsset) => {
     setUpdatingAvatar(true);
     try {
+      // Reads the picked file and, on web, crops/downscales it. Native URIs and
+      // browser blobs need completely different handling, hence the helper.
+      const { body, contentType, extension, previewUri } =
+        await prepareAvatarUpload(asset);
+
       if (!SUPABASE_CONFIGURED || !supabase) {
-        setAvatarUri(nextUri);
+        setAvatarUri(previewUri);
         setAvatarLibraryKey(null);
         await updateAuthSession({
-          avatarUri: nextUri,
+          avatarUri: previewUri,
           avatarPath: null,
           avatarLibraryKey: null,
         });
@@ -133,16 +153,12 @@ export default function EditProfileScreen() {
             ? cachedSession.avatarPath
             : null) || null;
 
-      const fileName = `${userId}/avatar-${Date.now()}.jpg`;
-      const base64 = await FileSystem.readAsStringAsync(nextUri, {
-        encoding: "base64",
-      });
-      const fileBytes = new Uint8Array(decodeBase64(base64));
+      const fileName = `${userId}/avatar-${Date.now()}.${extension}`;
 
       const { error: uploadError } = await supabase.storage
         .from("avatars")
-        .upload(fileName, fileBytes, {
-          contentType: "image/jpeg",
+        .upload(fileName, body, {
+          contentType,
           upsert: true,
         });
 
@@ -161,7 +177,7 @@ export default function EditProfileScreen() {
         );
       }
 
-      const remoteAvatarUrl = signedUrlData?.signedUrl || nextUri;
+      const remoteAvatarUrl = signedUrlData?.signedUrl || previewUri;
 
       setAvatarUri(remoteAvatarUrl);
       setAvatarLibraryKey(null);
@@ -187,14 +203,14 @@ export default function EditProfileScreen() {
           .from("avatars")
           .remove([previousAvatarPath]);
         if (removePreviousAvatarError) {
-          Alert.alert(
+          notify(
             "Avatar updated with warning",
             `Your new avatar was saved, but we could not delete the previous avatar file: ${removePreviousAvatarError.message}`,
           );
         }
       }
     } catch (error: any) {
-      Alert.alert("Avatar update failed", error?.message || "Try again.");
+      notify("Avatar update failed", error?.message || "Try again.");
     } finally {
       setUpdatingAvatar(false);
       void refreshDashboardProfile();
@@ -224,7 +240,7 @@ export default function EditProfileScreen() {
         }
       }
     } catch (error: any) {
-      Alert.alert("Avatar update failed", error?.message || "Try again.");
+      notify("Avatar update failed", error?.message || "Try again.");
     } finally {
       setUpdatingAvatar(false);
       setPendingLibraryKey(null);
@@ -239,7 +255,7 @@ export default function EditProfileScreen() {
     const originalName = initialFullName.trim();
 
     if (!trimmedName) {
-      Alert.alert("Name required", "Please enter your full name.");
+      notify("Name required", "Please enter your full name.");
       return;
     }
 
@@ -269,9 +285,9 @@ export default function EditProfileScreen() {
       setInitialFullName(trimmedName);
       setIsEditingFullName(false);
       void refreshDashboardProfile();
-      Alert.alert("Saved", "Full Name updated.");
+      notify("Saved", "Full Name updated.");
     } catch (error: any) {
-      Alert.alert("Update failed", error?.message || "Try again.");
+      notify("Update failed", error?.message || "Try again.");
     } finally {
       setSavingFullName(false);
     }
@@ -308,9 +324,9 @@ export default function EditProfileScreen() {
       setDraftPhoneNumber(nextPhoneNumber);
       setInitialPhoneNumber(nextPhoneNumber);
       setIsEditingPhoneNumber(false);
-      Alert.alert("Saved", "Phone Number updated.");
+      notify("Saved", "Phone Number updated.");
     } catch (error: any) {
-      Alert.alert("Update failed", error?.message || "Try again.");
+      notify("Update failed", error?.message || "Try again.");
     } finally {
       setSavingPhoneNumber(false);
     }
@@ -346,9 +362,9 @@ export default function EditProfileScreen() {
       setDraftAddress(nextAddress);
       setInitialAddress(nextAddress);
       setIsEditingAddress(false);
-      Alert.alert("Saved", "Address updated.");
+      notify("Saved", "Address updated.");
     } catch (error: any) {
-      Alert.alert("Update failed", error?.message || "Try again.");
+      notify("Update failed", error?.message || "Try again.");
     } finally {
       setSavingAddress(false);
     }
@@ -373,7 +389,7 @@ export default function EditProfileScreen() {
         promptOpenSettings("Photo Library");
         return false;
       }
-      Alert.alert(
+      notify(
         "Permission required",
         "Please allow photo library access to choose an avatar.",
       );
@@ -401,7 +417,7 @@ export default function EditProfileScreen() {
         promptOpenSettings("Camera");
         return false;
       }
-      Alert.alert(
+      notify(
         "Permission required",
         "Please allow camera access to take an avatar photo.",
       );
@@ -435,14 +451,30 @@ export default function EditProfileScreen() {
     }
   };
 
-  const launchNativeAvatarAction = (action: "gallery" | "camera") => {
+  const startAvatarAction = (action: "gallery" | "camera") => {
     if (updatingAvatar || launchingAvatarAction) {
       return;
     }
 
-    setPendingAvatarAction(action);
     setShowAvatarMenu(false);
     setShowAvatarLibraryPicker(false);
+
+    if (Platform.OS === "ios") {
+      // iOS cannot present the system picker while the menu Modal still owns
+      // the screen, so hand off to the Modal's onDismiss once it is gone.
+      setPendingAvatarAction(action);
+      return;
+    }
+
+    // Everywhere else, launch now.
+    //
+    // Android: Modal's onDismiss is iOS-only in React Native, so the deferred
+    // handoff above never fires there — that is why both buttons did nothing.
+    //
+    // Web: browsers only open a file/camera dialog while the click that
+    // triggered it is still the active user gesture, and waiting for the menu
+    // to close drops it (the dialog is then blocked silently).
+    void runAvatarAction(action);
   };
 
   const flushPendingAvatarAction = async () => {
@@ -457,48 +489,45 @@ export default function EditProfileScreen() {
 
   const launchGalleryPicker = async () => {
     try {
-      const hasPermission = await ensureMediaLibraryPermission();
-      if (!hasPermission) {
+      // The web picker grants both permissions unconditionally, and awaiting
+      // the check before launching would cost us the user gesture.
+      if (Platform.OS !== "web" && !(await ensureMediaLibraryPermission())) {
         return;
       }
 
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
-      });
+      const result = await ImagePicker.launchImageLibraryAsync(
+        AVATAR_PICKER_OPTIONS,
+      );
 
-      const nextUri = result.assets?.[0]?.uri;
-      if (!result.canceled && nextUri) {
-        await saveAvatarUri(nextUri);
+      const asset = result.assets?.[0];
+      if (!result.canceled && asset) {
+        await saveAvatarAsset(asset);
       }
     } catch (error: any) {
-      Alert.alert("Avatar update failed", error?.message || "Try again.");
+      notify("Avatar update failed", error?.message || "Try again.");
     }
   };
 
   const launchCameraPicker = async () => {
     try {
-      const hasPermission = await ensureCameraPermission();
-      if (!hasPermission) {
+      if (Platform.OS !== "web" && !(await ensureCameraPermission())) {
         return;
       }
 
+      // On web `cameraType` becomes the input's `capture="user"` attribute,
+      // which is what makes a phone open its front camera instead of the
+      // regular file browser.
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
+        ...AVATAR_PICKER_OPTIONS,
         cameraType: ImagePicker.CameraType.front,
       });
 
-      const nextUri = result.assets?.[0]?.uri;
-      if (!result.canceled && nextUri) {
-        await saveAvatarUri(nextUri);
+      const asset = result.assets?.[0];
+      if (!result.canceled && asset) {
+        await saveAvatarAsset(asset);
       }
     } catch (error: any) {
-      Alert.alert("Avatar update failed", error?.message || "Try again.");
+      notify("Avatar update failed", error?.message || "Try again.");
     }
   };
 
@@ -617,7 +646,7 @@ export default function EditProfileScreen() {
                   pressed && styles.avatarMenuItemPressed,
                 ]}
                 onPress={() => {
-                  launchNativeAvatarAction("gallery");
+                  startAvatarAction("gallery");
                 }}
                 disabled={updatingAvatar || launchingAvatarAction}
               >
@@ -634,7 +663,7 @@ export default function EditProfileScreen() {
                   pressed && styles.avatarMenuItemPressed,
                 ]}
                 onPress={() => {
-                  launchNativeAvatarAction("camera");
+                  startAvatarAction("camera");
                 }}
                 disabled={updatingAvatar || launchingAvatarAction}
               >
@@ -1354,7 +1383,7 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   avatarMenuBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(15, 23, 42, 0.35)",
   },
   avatarMenu: {

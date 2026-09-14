@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
+import * as SystemUI from "expo-system-ui";
 import React, {
     createContext,
     useContext,
@@ -118,13 +119,18 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     [theme, themeName],
   );
 
+  // Android is edge-to-edge from SDK 54 onward, so the status bar is always
+  // transparent and `<StatusBar backgroundColor>` no longer exists — whatever
+  // the app paints underneath shows through. That "whatever" is the native root
+  // view, which defaults to the system light/dark colour rather than ours, so
+  // the strip behind the status icons ends up mismatched. Paint it explicitly.
+  useEffect(() => {
+    void SystemUI.setBackgroundColorAsync(theme.background);
+  }, [theme.background]);
+
   return (
     <ThemeContext.Provider value={value}>
-      <StatusBar
-        animated
-        style={themeName === "dark" ? "light" : "dark"}
-        backgroundColor={theme.background}
-      />
+      <StatusBar animated style={themeName === "dark" ? "light" : "dark"} />
       {children}
     </ThemeContext.Provider>
   );
