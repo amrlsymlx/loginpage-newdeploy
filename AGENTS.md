@@ -30,7 +30,7 @@ There is no test suite.
   - `theme.tsx`, `formStyles.ts`, `validation.ts`, `notify.ts`
 - `docs/supabase-storage-setup.md` – `avatars` bucket and policy setup
 
-## Rules
+## Code style and conventions
 
 1. **Cross-platform first.** Anything browser-only or native-only goes in a platform-suffixed file (`.web.ts` / `.native.ts`), following the existing `avatarUpload` / `analytics` pattern, not `Platform.OS` branches scattered through screens.
 2. **Use `notify()` from `lib/notify.ts`, never `Alert.alert` directly.** react-native-web's `Alert.alert` is a silent no-op.
@@ -38,10 +38,15 @@ There is no test suite.
 4. **Cold launch always lands on sign-in.** An existing session is deliberately never used to auto-skip to the dashboard.
 5. **"Remember me" ≠ "Keep me signed in".** Remember-me only pre-fills the form (never persists a raw password beyond that); keep-signed-in decides whether the refresh token survives restart. Don't merge them.
 6. **reCAPTCHA is a client-side UI gate only.** The token is intentionally *not* passed to Supabase (`captchaToken`), because Supabase only verifies hCaptcha/Turnstile. Don't describe it as a security boundary; real enforcement needs a provider switch or Edge Functions.
-7. **Match existing code.** Reuse `lib/formStyles.ts`, `lib/theme.tsx` and existing components; keep TypeScript strict; use `npx expo install <pkg>` so versions match the SDK.
-8. **Keep changes small.** Do only what was asked; no drive-by refactors.
+7. **Reuse before adding.** Take styles from `lib/formStyles.ts`, colours from `useTheme()` in `lib/theme.tsx`; don't hard-code hex colours in screens. Type props and Supabase results; avoid `any`.
+8. **Install packages with `npx expo install <pkg>`** so versions match SDK 57.
+9. **Touch only the files the request needs.** No reformatting or refactors of unrelated code.
 
-## Environment and Supabase
+## Testing
+
+No test suite exists. After changes: run `npm run lint` and fix what you introduced, then check the affected flow with `npm run web` (sign in, sign up, reset, edit profile as relevant). If you couldn't run the app, say so.
+
+## Security and environment
 
 `.env` (git-ignored; never commit or print values) uses: `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, `EXPO_PUBLIC_RECAPTCHA_SITE_KEY`, `EXPO_PUBLIC_APP_BASE_URL`, and optional overrides `EXPO_PUBLIC_SIGNUP_REDIRECT_URL`, `EXPO_PUBLIC_RESET_REDIRECT_URL`, `EXPO_PUBLIC_RECAPTCHA_BASE_URL`, `EXPO_PUBLIC_RECOVERY_LINK_BLOCK_HOURS`. The file holds several commented domain blocks (Firebase / own domain / localhost); exactly one block should be active.
 
@@ -51,6 +56,8 @@ There is no test suite.
 - After password reset the app calls the Supabase Edge Function `send-password-change-success-email` (body `{ "email": "..." }`); the function is not in this repo.
 - Static web export: do **not** enable SPA rewrites on the host, they collapse every route to the index page.
 
-## Git
+## Commits and PRs
 
-- Don't commit or push unless asked. Short, imperative commit messages.
+- Don't commit or push unless asked.
+- Commit subjects are imperative and under 72 characters (e.g. "Fix reset-password redirect on web"). Run `npm run lint` before committing.
+- Never commit `.env` or any file containing keys.
